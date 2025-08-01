@@ -15,23 +15,30 @@ defmodule Kdef.Parser do
   """
   def parse(content, opts \\ []) when is_binary(content) do
     source = Keyword.get(opts, :source, "unknown")
+    explicit_prefix = Keyword.get(opts, :prefix)
 
     try do
+      lines = String.split(content, "\n")
+
+      # Infer prefix from first config line if not explicitly provided
+      prefix = explicit_prefix || infer_prefix(content) || "CONFIG_"
+
       entries =
-        content
-        |> String.split("\n")
+        lines
         |> Enum.with_index(1)
         |> Enum.map(fn {line, line_number} ->
-          parse_line(line, line_number, source)
+          parse_line(line, line_number, source, prefix)
         end)
         |> Enum.reject(&is_nil/1)
 
       config = %Config{
         entries: entries,
+        prefix: prefix,
         metadata: %{
           source: source,
           parsed_at: DateTime.utc_now(),
-          line_count: length(String.split(content, "\n"))
+          line_count: length(lines),
+          prefix: prefix
         }
       }
 
@@ -57,7 +64,7 @@ defmodule Kdef.Parser do
 
   # Private parsing functions
 
-  defp parse_line(line, line_number, source) do
+  defp parse_line(line, line_number, source, prefix) do
     trimmed = String.trim(line)
 
     cond do
@@ -67,11 +74,11 @@ defmodule Kdef.Parser do
 
       # Comment line
       String.starts_with?(trimmed, "#") ->
-        parse_comment_line(trimmed, line_number, source)
+        parse_comment_line(trimmed, line_number, source, prefix)
 
       # Config line
-      String.starts_with?(trimmed, "CONFIG_") ->
-        parse_config_line(trimmed, line_number, source)
+      String.starts_with?(trimmed, prefix) ->
+        parse_config_line(trimmed, line_number, source, prefix)
 
       # Unknown line format - treat as comment
       true ->
@@ -79,11 +86,15 @@ defmodule Kdef.Parser do
     end
   end
 
-  defp parse_comment_line(line, line_number, source) do
+  defp parse_comment_line(line, line_number, source, prefix) do
+    # Create regex pattern for disabled config comments with dynamic prefix
+    escaped_prefix = Regex.escape(prefix)
+    disabled_pattern = ~r/^#\s*#{escaped_prefix}(\w+)\s+is not set\s*$/
+
     cond do
-      # Disabled config: # CONFIG_SOMETHING is not set
-      Regex.match?(~r/^#\s*CONFIG_(\w+)\s+is not set\s*$/, line) ->
-        case Regex.run(~r/^#\s*CONFIG_(\w+)\s+is not set\s*$/, line) do
+      # Disabled config: # PREFIX_SOMETHING is not set
+      Regex.match?(disabled_pattern, line) ->
+        case Regex.run(disabled_pattern, line) do
           [_, key] ->
             Entry.bool(key, false,
               line_number: line_number,
@@ -106,8 +117,8 @@ defmodule Kdef.Parser do
     end
   end
 
-  defp parse_config_line(line, line_number, source) do
-    case parse_config_assignment(line) do
+  defp parse_config_line(line, line_number, source, prefix) do
+    case parse_config_assignment(line, prefix) do
       {:ok, key, value, type} ->
         case type do
           :bool -> Entry.bool(key, value, line_number: line_number, source: source)
@@ -123,8 +134,11 @@ defmodule Kdef.Parser do
     end
   end
 
-  defp parse_config_assignment(line) do
-    case Regex.run(~r/^CONFIG_(\w+)=(.+)$/, String.trim(line)) do
+  defp parse_config_assignment(line, prefix) do
+    escaped_prefix = Regex.escape(prefix)
+    pattern = ~r/^#{escaped_prefix}(\w+)=(.+)$/
+
+    case Regex.run(pattern, String.trim(line)) do
       [_, key, value_str] ->
         parse_config_value(key, String.trim(value_str))
 
@@ -174,6 +188,26 @@ defmodule Kdef.Parser do
     end
   end
 
+  # Infer prefix from the first config line found in the content
+  defp infer_prefix(content) when is_binary(content) do
+    # Look for the first line that matches config assignment pattern
+    # Try to match common prefixes first
+    cond do
+      Regex.match?(~r/^CONFIG_\w+=.*$/m, content) ->
+        "CONFIG_"
+
+      Regex.match?(~r/^BR2_\w+=.*$/m, content) ->
+        "BR2_"
+
+      # Generic fallback - look for any CAPS_PREFIX pattern
+      true ->
+        case Regex.run(~r/^([A-Z]+_)\w+=.*$/m, content) do
+          [_, prefix] -> prefix
+          _ -> nil
+        end
+    end
+  end
+
   defp parse_hex("0x" <> hex_str), do: parse_hex_digits(hex_str)
   defp parse_hex("0X" <> hex_str), do: parse_hex_digits(hex_str)
   defp parse_hex(_), do: {:error, "Invalid hex format"}
@@ -217,7 +251,7 @@ defmodule Kdef.Formatter do
 
     entries
     |> maybe_filter_comments(preserve_comments)
-    |> Enum.map(&Entry.to_string/1)
+    |> Enum.map(&Entry.to_string(&1, config.prefix))
     |> Enum.join("\n")
   end
 
@@ -231,7 +265,7 @@ defmodule Kdef.Formatter do
   @doc """
   Formats a diff result in a human-readable format.
   """
-  def format_diff(diff_result) do
+  def format_diff(diff_result, prefix \\ "CONFIG_") do
     lines = []
 
     lines =
@@ -240,7 +274,7 @@ defmodule Kdef.Formatter do
           "Added entries:",
           ""
           | Enum.map(diff_result.added, fn entry ->
-              "+ #{Entry.to_string(entry)}"
+              "+ #{Entry.to_string(entry, prefix)}"
             end)
         ]
 
@@ -255,7 +289,7 @@ defmodule Kdef.Formatter do
           "Removed entries:",
           ""
           | Enum.map(diff_result.removed, fn entry ->
-              "- #{Entry.to_string(entry)}"
+              "- #{Entry.to_string(entry, prefix)}"
             end)
         ]
 
@@ -271,8 +305,8 @@ defmodule Kdef.Formatter do
           ""
           | Enum.map(diff_result.changed, fn {old_entry, new_entry} ->
               [
-                "- #{Entry.to_string(old_entry)}",
-                "+ #{Entry.to_string(new_entry)}"
+                "- #{Entry.to_string(old_entry, prefix)}",
+                "+ #{Entry.to_string(new_entry, prefix)}"
               ]
             end)
             |> List.flatten()

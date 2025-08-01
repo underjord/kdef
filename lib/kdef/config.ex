@@ -7,11 +7,12 @@ defmodule Kdef.Config do
   source ordering.
   """
 
-  defstruct entries: [], metadata: %{}
+  defstruct entries: [], metadata: %{}, prefix: "CONFIG_"
 
   @type t :: %__MODULE__{
           entries: [Kdef.Config.Entry.t()],
-          metadata: map()
+          metadata: map(),
+          prefix: String.t()
         }
 
   @doc """
@@ -19,7 +20,8 @@ defmodule Kdef.Config do
   """
   def new(opts \\ []) do
     metadata = Keyword.get(opts, :metadata, %{})
-    %__MODULE__{entries: [], metadata: metadata}
+    prefix = Keyword.get(opts, :prefix, "CONFIG_")
+    %__MODULE__{entries: [], metadata: metadata, prefix: prefix}
   end
 
   @doc """

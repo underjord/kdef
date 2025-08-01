@@ -567,4 +567,144 @@ defmodule Kdef.ParserTest do
       assert fourth_entry.line_number == 4
     end
   end
+
+  describe "prefix support" do
+    test "infers CONFIG_ prefix automatically" do
+      content = """
+      CONFIG_ARM64=y
+      CONFIG_64BIT=y
+      """
+
+      {:ok, config} = Parser.parse(content)
+      assert config.prefix == "CONFIG_"
+
+      entry = Config.get_entry(config, "ARM64")
+      assert entry.key == "ARM64"
+      assert entry.value == true
+    end
+
+    test "infers BR2_ prefix automatically" do
+      content = """
+      BR2_PACKAGE_BUSYBOX=y
+      BR2_TOOLCHAIN_GCC=y
+      """
+
+      {:ok, config} = Parser.parse(content)
+      assert config.prefix == "BR2_"
+
+      entry = Config.get_entry(config, "PACKAGE_BUSYBOX")
+      assert entry.key == "PACKAGE_BUSYBOX"
+      assert entry.value == true
+    end
+
+    test "uses explicit prefix when provided" do
+      content = """
+      MY_CUSTOM_OPTION=y
+      MY_CUSTOM_VALUE="test"
+      """
+
+      {:ok, config} = Parser.parse(content, prefix: "MY_CUSTOM_")
+      assert config.prefix == "MY_CUSTOM_"
+
+      entry = Config.get_entry(config, "OPTION")
+      assert entry.key == "OPTION"
+      assert entry.value == true
+    end
+
+    test "falls back to CONFIG_ when no prefix can be inferred" do
+      content = """
+      # Just a comment
+      # Another comment
+      """
+
+      {:ok, config} = Parser.parse(content)
+      assert config.prefix == "CONFIG_"
+    end
+
+    test "handles disabled config comments with different prefixes" do
+      content = """
+      BR2_PACKAGE_BUSYBOX=y
+      # BR2_PACKAGE_DROPBEAR is not set
+      """
+
+      {:ok, config} = Parser.parse(content)
+      assert config.prefix == "BR2_"
+
+      enabled_entry = Config.get_entry(config, "PACKAGE_BUSYBOX")
+      assert enabled_entry.value == true
+
+      disabled_entry = Config.get_entry(config, "PACKAGE_DROPBEAR")
+      assert disabled_entry.value == false
+      assert disabled_entry.metadata.disabled_comment == true
+    end
+
+    test "formats entries with correct prefix" do
+      {:ok, config} = Parser.parse("BR2_PACKAGE_BUSYBOX=y")
+      formatted = Formatter.format(config)
+      assert formatted == "BR2_PACKAGE_BUSYBOX=y"
+    end
+
+    test "formats disabled entries with correct prefix" do
+      content = """
+      BR2_PACKAGE_BUSYBOX=y
+      # BR2_PACKAGE_DROPBEAR is not set
+      """
+
+      {:ok, config} = Parser.parse(content)
+      formatted = Formatter.format(config)
+
+      assert String.contains?(formatted, "BR2_PACKAGE_BUSYBOX=y")
+      assert String.contains?(formatted, "# BR2_PACKAGE_DROPBEAR is not set")
+    end
+
+    test "infers prefix from first config line, ignoring comments" do
+      content = """
+      # This is a comment
+      # Another comment
+      BR2_PACKAGE_BUSYBOX=y
+      BR2_TOOLCHAIN_GCC=y
+      """
+
+      {:ok, config} = Parser.parse(content)
+      assert config.prefix == "BR2_"
+    end
+
+    test "handles mixed content with custom prefix" do
+      content = """
+      # Custom configuration
+      CUSTOM_OPTION_A=y
+      CUSTOM_OPTION_B="value"
+      CUSTOM_OPTION_C=42
+      # CUSTOM_OPTION_D is not set
+      """
+
+      {:ok, config} = Parser.parse(content, prefix: "CUSTOM_")
+      assert config.prefix == "CUSTOM_"
+
+      assert Config.get_entry(config, "OPTION_A").value == true
+      assert Config.get_entry(config, "OPTION_B").value == "value"
+      assert Config.get_entry(config, "OPTION_C").value == 42
+      assert Config.get_entry(config, "OPTION_D").value == false
+    end
+
+    test "preserves prefix in round-trip parsing and formatting" do
+      original_content = """
+      BR2_PACKAGE_BUSYBOX=y
+      BR2_PACKAGE_DROPBEAR=m
+      # BR2_PACKAGE_OPENSSH is not set
+      BR2_TARGET_ROOTFS_EXT2=y
+      """
+
+      {:ok, config} = Parser.parse(original_content)
+      formatted = Formatter.format(config)
+      {:ok, reparsed_config} = Parser.parse(formatted)
+
+      assert config.prefix == reparsed_config.prefix
+      assert config.prefix == "BR2_"
+
+      # Check that the key-value pairs are preserved
+      assert Config.get_entry(config, "PACKAGE_BUSYBOX").value ==
+               Config.get_entry(reparsed_config, "PACKAGE_BUSYBOX").value
+    end
+  end
 end

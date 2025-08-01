@@ -133,40 +133,47 @@ defmodule Kdef.Config.Entry do
   end
 
   @doc """
-  Converts an entry to its Kconfig string representation.
+  Converts an entry to its Kconfig string representation using the default CONFIG_ prefix.
   """
-  def to_string(%__MODULE__{type: :comment, comment: comment}) do
+  def to_string(%__MODULE__{} = entry) do
+    to_string(entry, "CONFIG_")
+  end
+
+  @doc """
+  Converts an entry to its Kconfig string representation with a custom prefix.
+  """
+  def to_string(%__MODULE__{type: :comment, comment: comment}, _prefix) do
     "# #{comment}"
   end
 
-  def to_string(%__MODULE__{type: :blank}) do
+  def to_string(%__MODULE__{type: :blank}, _prefix) do
     ""
   end
 
-  def to_string(%__MODULE__{key: key, value: true, type: type})
+  def to_string(%__MODULE__{key: key, value: true, type: type}, prefix)
       when type in [:bool, :tristate] do
-    "CONFIG_#{key}=y"
+    "#{prefix}#{key}=y"
   end
 
-  def to_string(%__MODULE__{key: key, value: false, type: type})
+  def to_string(%__MODULE__{key: key, value: false, type: type}, prefix)
       when type in [:bool, :tristate] do
-    "# CONFIG_#{key} is not set"
+    "# #{prefix}#{key} is not set"
   end
 
-  def to_string(%__MODULE__{key: key, value: :module, type: :tristate}) do
-    "CONFIG_#{key}=m"
+  def to_string(%__MODULE__{key: key, value: :module, type: :tristate}, prefix) do
+    "#{prefix}#{key}=m"
   end
 
-  def to_string(%__MODULE__{key: key, value: value, type: :string}) do
-    "CONFIG_#{key}=\"#{value}\""
+  def to_string(%__MODULE__{key: key, value: value, type: :string}, prefix) do
+    "#{prefix}#{key}=\"#{value}\""
   end
 
-  def to_string(%__MODULE__{key: key, value: value, type: :int}) do
-    "CONFIG_#{key}=#{value}"
+  def to_string(%__MODULE__{key: key, value: value, type: :int}, prefix) do
+    "#{prefix}#{key}=#{value}"
   end
 
-  def to_string(%__MODULE__{key: key, value: value, type: :hex}) do
-    "CONFIG_#{key}=0x#{Integer.to_string(value, 16)}"
+  def to_string(%__MODULE__{key: key, value: value, type: :hex}, prefix) do
+    "#{prefix}#{key}=0x#{Integer.to_string(value, 16)}"
   end
 
   @doc """
@@ -398,7 +405,7 @@ end
 defimpl String.Chars, for: Kdef.Config do
   def to_string(%Kdef.Config{} = config) do
     config.entries
-    |> Enum.map(&Kdef.Config.Entry.to_string/1)
+    |> Enum.map(&Kdef.Config.Entry.to_string(&1, config.prefix))
     |> Enum.join("\n")
   end
 end
